@@ -10,7 +10,7 @@ begin
         import Pkg; Pkg.activate("../")
     end
     using Revise
-    using MondrianML, Test, PlutoUI, CairoMakie
+    using MondrianML, Test, PlutoUI, CairoMakie, Random, LinearAlgebra
     using MondrianML: Box
     TableOfContents()
 end
@@ -105,25 +105,34 @@ md"# many-Mondrian partition featurization"
 M = 25
 
 # ╔═╡ a994e9d3-471f-47f1-bf08-34148d058760
-mf, Φ = sample_mondrian_featurization(
+mf, Φ_train = sample_mondrian_featurization(
 	X, [0.5, 0.5], M
 )
 
-# ╔═╡ 273089d4-7dc4-4cfd-8e8c-37300ab3b264
-Φ
+# ╔═╡ c3c37294-794e-4d5d-a8bc-b61aad6a8eda
+size(Φ_train)
 
-# ╔═╡ 51b7ecb2-4e82-461d-9df1-ab64bd3833d9
-@test all(sum(Φ, dims=2) .≈ M)
+# ╔═╡ be4acc06-2744-4371-a3ac-acd6aa8f261a
+@test featurize(X, mf) ≈ Φ_train
+
+# ╔═╡ 246cca43-0cc3-49fc-8971-cae674457e13
+size(X)[1] * M
+
+# ╔═╡ 9d0047f0-caae-41cb-b0b9-2997441504fa
+@test all(sum(Φ_train, dims=2) .== M)
+
+# ╔═╡ d397cd5d-58d2-4a81-9bc7-dd8b4c8cc512
+@test all(Φ_train[:, end] .≈ 0.0)
 
 # ╔═╡ a2978bfd-0ca0-42e6-bf70-4e7abffd0b3d
 begin
-	data_in_partition_counts = vec(sum(Φ, dims=1))
+	data_in_partition_counts = vec(sum(Φ_train, dims=1))
 	hist(
 		data_in_partition_counts,
 		bins=(-0.5:1:maximum(data_in_partition_counts)+0.5),
 		axis=(;
 			  xlabel="# data inside", 
-			  ylabel="# leaves", limits=(-0.5, nothing, 0, nothing),
+			  ylabel="# boxes", limits=(-0.5, nothing, 0, nothing),
 			  xticks=1:maximum(data_in_partition_counts)
 		)
 	)
@@ -132,52 +141,81 @@ end
 # ╔═╡ f0c72197-f886-42bd-8409-af85d69aa5d4
 md"# 🔨 Bayesian linear regression"
 
-# ╔═╡ be4acc06-2744-4371-a3ac-acd6aa8f261a
-@test featurize(X, mf) ≈ Φ
-
 # ╔═╡ fe7fba36-1e11-468b-8816-71aee0b577eb
 begin
-    struct BayesianLinearRegression
+    # see Bayesian linear regression in Murphy and Bishop too.
+    struct BLR
         μ₀::Float64
-        σ₀::Float64 # /M for function itself
+        σ₀::Float64 # variance of function itself / # partitions
         σ::Float64  # measurement noise
     end
-
-    struct BayesianLinearRegressionFit
+    
+    struct BLRFit
         μₙ::Vector{Float64}
         Λₙ::Cholesky{Float64, Matrix{Float64}}
+        L⁻¹::LowerTriangular{Float64, Matrix{Float64}}  # cached L⁻¹
+        σ::Float64
+        log_ev::Float64
     end
-
+    
     function fit(
-        model::BayesianLinearRegression,
-        Φ::AbstractMatrix{Float64},   # n_obs × n_features
-        y::Vector{Float64}
+        Φ::AbstractMatrix{Float64},
+        y::Vector{Float64},
+        blr::BLR
     )
-        σ₀_inv = 1.0 / model.σ₀ ^ 2
-        σ_inv  = 1.0 / model.σ ^ 2
-        n_features = size(Φ, 2)
-
-        Λₙ  = cholesky(Symmetric(σ₀_inv * I(n_features) + σ_inv * Φ' * Φ))
-        rhs = σ₀_inv * fill(model.μ₀, n_features) + σ_inv * Φ' * y
+        n, p   = size(Φ)
+        σ₀_inv = 1.0 / blr.σ₀^2
+        σ_inv  = 1.0 / blr.σ^2
+        μ₀_vec = fill(blr.μ₀, p)
+    
+        Λₙ  = cholesky(Symmetric(σ₀_inv * I(p) + σ_inv * Φ' * Φ))
+        rhs = σ₀_inv * μ₀_vec + σ_inv * Φ' * y
         μₙ  = Λₙ \ rhs
-
-        return BayesianLinearRegressionFit(μₙ, Λₙ)
+        L⁻¹ = inv(Λₙ.L)
+    
+        # log evidence
+        log_det_Λ₀ = p * log(σ₀_inv)
+        log_det_Λₙ = 2.0 * sum(log.(diag(Λₙ.L)))
+        μₙᵀΛₙμₙ = sum(abs2, Λₙ.U * μₙ)
+        μ₀ᵀΛ₀μ₀   = σ₀_inv * dot(μ₀_vec, μ₀_vec)
+    
+        log_ev = 0.5 * (log_det_Λ₀ - log_det_Λₙ)         # log|Λ₀|/|Λₙ|
+               - 0.5 * n * log(2π * blr.σ^2)               # normaliser
+               - 0.5 * σ_inv * (dot(y,y) + μ₀ᵀΛ₀μ₀ - μₙᵀΛₙμₙ)  # quadratics
+    
+        return BLRFit(μₙ, Λₙ, L⁻¹, blr.σ, log_ev)
     end
-
+    
     function predict(
-        fit::BayesianLinearRegressionFit,
-        blr::BayesianLinearRegression,
-        Φ::AbstractMatrix{Float64}
+        Φ::AbstractMatrix{Float64},
+        fit::BLRFit
     )
         μ_pred = Φ * fit.μₙ
-        V      = fit.Λₙ \ Φ'
-        σ_pred = sqrt.(vec(sum(Φ .* V', dims=2)) .+ blr.σ^2)
+    
+        # Z = (L⁻¹ Φᵀ), so row-norms of Z give φᵢᵀ Λₙ⁻¹ φᵢ
+        Z  = fit.L⁻¹ * Φ'                          # n_features × n_obs
+        σ_pred = sqrt.(vec(sum(Z .^ 2, dims=1)) .+ fit.σ^2)
+    
         return μ_pred, σ_pred
     end
 end
 
 # ╔═╡ bc6d461d-53ab-45fa-af2c-5d8bf296984c
 forrester(x) = (6 * x - 2)^2 * sin(12 * x - 4)   # x ∈ [0, 1]
+
+# ╔═╡ 13c0a584-79fb-4c18-a508-9ba46c719de3
+begin
+	# test with known regression
+	w = [-1.0, 4.0]
+	local n = 100
+	local ϵ = 0.01
+	X_lr = rand(n, 2) * 10
+	y_lr = X_lr * w .+ randn(n)
+	
+	blr_test = BLR(1.0 * 0.5 + 4.0 * 0.5, 1.0, ϵ)
+	model_test = fit(X_lr, y_lr, blr_test)
+	@test isapprox(model_test.μₙ, w, atol=0.1)
+end
 
 # ╔═╡ 09bb10d8-53b4-406d-95ed-57d9ca368a2c
 function test_1D(n::Int; M::Int=10, λ::Float64=1.0, seed::Int=1)
@@ -186,20 +224,21 @@ function test_1D(n::Int; M::Int=10, λ::Float64=1.0, seed::Int=1)
 	# data
 	Random.seed!(seed)
 	X = rand(n, 1)
-	y = [forrester(X[i, 1]) + randn() for i = 1:n]
+	y = [forrester(X[i, 1]) + 0.2 * randn() for i = 1:n]
 	
 	# model
 	Random.seed!() # reset
-	mf, Φ_train = generate_mondrian_featurization(
+	mf, Φ_train = sample_mondrian_featurization(
 		X, [λ], M, box=Box([-0.2], [1.0])
 	)
 	println("# dims: ", mf.dims)
-	blr = BayesianLinearRegression(0.0, 5.0 / M, 0.05)
-	model = fit(blr, Φ_train, y)
+	blr = BLR(0.0, 10.0 / M, 0.2)
+	model = fit(Φ_train, y, blr)
 	X_test = collect(reshape(xs, length(xs), 1))
-	Φ_test = mondrian_featurize(X_test, mf)
+	Φ_test = featurize(X_test, mf)
+	println("log evidence: ", model.log_ev)
 
-	μ, σ = predict(model, blr, Φ_test)
+	μ, σ = predict(Φ_test, model)
 
 	fig = Figure()
 	ax = Axis(fig[1, 1], xlabel="x", ylabel="y")
@@ -222,7 +261,7 @@ function test_1D(n::Int; M::Int=10, λ::Float64=1.0, seed::Int=1)
 end
 
 # ╔═╡ d5513ef7-e999-4d3e-b5a2-75db8c84dddf
-test_1D(6, M=100, λ=2.0, seed=1)
+test_1D(10, M=10, λ=3.0, seed=6)
 
 # ╔═╡ Cell order:
 # ╠═45eb3179-bda4-472c-9e09-6e4e3f51ba6c
@@ -245,12 +284,15 @@ test_1D(6, M=100, λ=2.0, seed=1)
 # ╟─b0f4345b-a573-4a31-8992-f97810a1e408
 # ╠═f20c60eb-e2b9-433d-bc7c-10f9cb00f25a
 # ╠═a994e9d3-471f-47f1-bf08-34148d058760
-# ╠═273089d4-7dc4-4cfd-8e8c-37300ab3b264
-# ╠═51b7ecb2-4e82-461d-9df1-ab64bd3833d9
+# ╠═c3c37294-794e-4d5d-a8bc-b61aad6a8eda
+# ╠═be4acc06-2744-4371-a3ac-acd6aa8f261a
+# ╠═246cca43-0cc3-49fc-8971-cae674457e13
+# ╠═9d0047f0-caae-41cb-b0b9-2997441504fa
+# ╠═d397cd5d-58d2-4a81-9bc7-dd8b4c8cc512
 # ╠═a2978bfd-0ca0-42e6-bf70-4e7abffd0b3d
 # ╟─f0c72197-f886-42bd-8409-af85d69aa5d4
-# ╠═be4acc06-2744-4371-a3ac-acd6aa8f261a
 # ╠═fe7fba36-1e11-468b-8816-71aee0b577eb
 # ╠═bc6d461d-53ab-45fa-af2c-5d8bf296984c
+# ╠═13c0a584-79fb-4c18-a508-9ba46c719de3
 # ╠═09bb10d8-53b4-406d-95ed-57d9ca368a2c
 # ╠═d5513ef7-e999-4d3e-b5a2-75db8c84dddf
