@@ -40,10 +40,13 @@ begin
 end
 
 # ╔═╡ 337354f2-7e3f-4079-8ecb-f1d18deace04
-mpartition = sample_mondrian_partition(box, [1.0, 2.90])
+mpartition = sample_mondrian_partition(box, [1.0, 0.5])
+
+# ╔═╡ c603c3ce-6455-43cb-a3a5-6898e1da7934
+boxes = get_boxes(mpartition)
 
 # ╔═╡ 28606636-3285-4db1-82e4-a18b5186368c
-X = rand(7, 2); X[:, 2] *= 1.2
+X = rand(5, 2); X[:, 2] *= 1.2
 
 # ╔═╡ 2c71de3e-86bf-4461-9e9b-4523f8bc0ad2
 @assert inside(X, box)
@@ -58,20 +61,23 @@ md"# 🏬 featurization"
 begin
 	local X = rand(1, 2)
 	local mpartition = sample_mondrian_partition(box, [1.0, 0.5])
-	local bid = box_id(mpartition, X[1, :])
-	println("box ID: ", bid)
+	local box_id = get_box_id(mpartition, X[1, :])
+	println("box ID: ", box_id)
 	viz(mpartition, color_active_boxes=true, show_leaf_ids=true, X=X)
 end
 
+# ╔═╡ 62b39d66-55b4-4ec8-9b98-9d6710fcbbb8
+Φ₁, box_to_col = featurize(mpartition, X)
+
+# ╔═╡ de53f552-85d9-45fe-803b-d3a76fbb3d0b
+col_to_box = Dict(col => box for (box, col) in box_to_col)
+
 # ╔═╡ bac7dec7-a402-4649-877b-a0de2ec417e6
 begin
-	local mpartition = sample_mondrian_partition(box, [0.6, 0.4])
 	local fig = viz(mpartition, show_leaf_ids=true)
 	
 	local ax = current_axis(fig)
-
-	local X = rand(4, 2)
-	Φ₁, box_to_col = featurize(mpartition, X)
+	
 	for n = 1:size(X, 1)
 		scatter!(ax, X[n, 1], X[n, 2], label="$n")
 	end
@@ -80,16 +86,23 @@ begin
 end
 
 # ╔═╡ 8aae7299-e713-40a8-b264-82889ef6fd6b
-Φ₁
+begin
+	n_data = size(X, 1)
+	@test size(Φ₁)[1] == n_data
+	@test all(sum(Φ₁, dims=2) .≈ 1.0)
+end
+
+# ╔═╡ 94a989ee-807c-45be-a8aa-5b46d32fbf16
+for n = 1:size(X, 1)
+	hot_col = findfirst(Φ₁[n, :] .≈ 1.0)
+	@test inside(X[n, :], boxes[col_to_box[hot_col]])
+end
 
 # ╔═╡ b0f4345b-a573-4a31-8992-f97810a1e408
 md"# many-Mondrian partition featurization"
 
 # ╔═╡ f20c60eb-e2b9-433d-bc7c-10f9cb00f25a
 M = 25
-
-# ╔═╡ 5b106e48-b538-4dcb-be3f-92cc9d7c674d
-eps()
 
 # ╔═╡ a994e9d3-471f-47f1-bf08-34148d058760
 mf, Φ = sample_mondrian_featurization(
@@ -119,34 +132,8 @@ end
 # ╔═╡ f0c72197-f886-42bd-8409-af85d69aa5d4
 md"# 🔨 Bayesian linear regression"
 
-# ╔═╡ 12d41088-ee78-4856-aaa3-b2d4b9c4d046
-function mondrian_featurize(
-    X::AbstractMatrix{Float64},
-    mf::MondrianFeaturization
-)
-    n_test = size(X, 1)
-    Φ = zeros(Float64, n_test, mf.dims)
-    col_offset = 0
-    for (mpartition, leaf_to_col) in zip(mf.mpartitions, mf.leaf_to_col)
-        check_bounds(X, mpartition.root.box)
-        for n in 1:n_test
-            leaf_id = find_leaf(mpartition.root, view(X, n, :))
-            if haskey(leaf_to_col, leaf_id)
-                Φ[n, col_offset + leaf_to_col[leaf_id]] = 1.0
-            else
-                Φ[n, end] += 1.0 # accumulate "other" partitions
-            end
-        end
-        col_offset += length(leaf_to_col)
-    end
-    return Φ
-end
-
 # ╔═╡ be4acc06-2744-4371-a3ac-acd6aa8f261a
-@test mondrian_featurize(X, mf) ≈ Φ
-
-# ╔═╡ 910d4918-c514-481b-b410-46eaf553e67f
-X
+@test featurize(X, mf) ≈ Φ
 
 # ╔═╡ fe7fba36-1e11-468b-8816-71aee0b577eb
 begin
@@ -244,24 +231,25 @@ test_1D(6, M=100, λ=2.0, seed=1)
 # ╠═0b0fdbf3-45bf-4db7-b243-e297946dda75
 # ╠═3eb19759-d169-4cf9-8ffa-9fb2bf907d53
 # ╠═337354f2-7e3f-4079-8ecb-f1d18deace04
+# ╠═c603c3ce-6455-43cb-a3a5-6898e1da7934
 # ╠═28606636-3285-4db1-82e4-a18b5186368c
 # ╠═2c71de3e-86bf-4461-9e9b-4523f8bc0ad2
 # ╠═6835f537-07a2-4713-be35-a562ee3ac2b3
 # ╟─00ce797f-46ca-4bcd-b171-55e3a5750d45
 # ╠═390a8ab5-517c-4979-9d33-ad7d783c6f74
+# ╠═62b39d66-55b4-4ec8-9b98-9d6710fcbbb8
+# ╠═de53f552-85d9-45fe-803b-d3a76fbb3d0b
 # ╠═bac7dec7-a402-4649-877b-a0de2ec417e6
 # ╠═8aae7299-e713-40a8-b264-82889ef6fd6b
+# ╠═94a989ee-807c-45be-a8aa-5b46d32fbf16
 # ╟─b0f4345b-a573-4a31-8992-f97810a1e408
 # ╠═f20c60eb-e2b9-433d-bc7c-10f9cb00f25a
-# ╠═5b106e48-b538-4dcb-be3f-92cc9d7c674d
 # ╠═a994e9d3-471f-47f1-bf08-34148d058760
 # ╠═273089d4-7dc4-4cfd-8e8c-37300ab3b264
 # ╠═51b7ecb2-4e82-461d-9df1-ab64bd3833d9
 # ╠═a2978bfd-0ca0-42e6-bf70-4e7abffd0b3d
 # ╟─f0c72197-f886-42bd-8409-af85d69aa5d4
-# ╠═12d41088-ee78-4856-aaa3-b2d4b9c4d046
 # ╠═be4acc06-2744-4371-a3ac-acd6aa8f261a
-# ╠═910d4918-c514-481b-b410-46eaf553e67f
 # ╠═fe7fba36-1e11-468b-8816-71aee0b577eb
 # ╠═bc6d461d-53ab-45fa-af2c-5d8bf296984c
 # ╠═09bb10d8-53b4-406d-95ed-57d9ca368a2c

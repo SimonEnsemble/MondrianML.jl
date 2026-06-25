@@ -4,6 +4,8 @@ struct Box
     hi::Vector{Float64}
 end
 
+center(box::Box) = (box.lo + box.hi) / 2
+
 inside(x::AbstractArray{Float64}, box::Box) = all(x .> box.lo) && all(x .≤ box.hi)
 
 function inside(X::Matrix{Float64}, box::Box)
@@ -91,12 +93,26 @@ function count_leaves(node::MondrianNode)
     end
 end
 
-count_leaves(mpartition::MondrianPartition) = count_leaves(mpartition.root)
+count_boxes(mpartition::MondrianPartition) = count_leaves(mpartition.root)
+
+function get_boxes(mpartition::MondrianPartition)
+    boxes = Vector{Box}(undef, count_boxes(mpartition))
+    stack = [mpartition.root]
+    while ! isempty(stack)
+        node = pop!(stack)
+        if isnothing(node.split) # leaf
+            boxes[node.id] = node.box
+        else
+            push!(stack, node.left, node.right)
+        end
+    end
+    return boxes
+end
 
 function Base.show(io::IO, mp::MondrianPartition)
     println(io, "MondrianPartition")
     println(io, "  # dims: $(mp.dims)")
     println(io, "  λ's: $(mp.λ)")
     println(io, "  parent box: $(mp.root.box)")
-    println(io, "  # partitions: ", count_leaves(mp))
+    println(io, "  # boxes: ", count_boxes(mp))
 end
