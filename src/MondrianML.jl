@@ -3,6 +3,11 @@ module MondrianML
 using Random, Statistics, StatsBase, CairoMakie, ColorSchemes, LinearAlgebra
 
 include("mondrian_partition.jl")
+include("viz.jl")
+include("featurization.jl")
 
-export sample_mondrian_partition
+export MondrianPartition, Box, Split, MondrianNode, inside, sample_mondrian_partition,
+    viz,
+    box_id, featurize, sample_mondrian_featurization
+
 end # module
